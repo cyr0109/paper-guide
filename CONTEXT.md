@@ -1,11 +1,11 @@
 # Paper Guide
 
-幫一個人（自己）在聽 lab meeting 簡報前後讀懂論文的工具。
+幫人在聽論文簡報前後讀懂論文的工具。
 
 ## Language
 
 **簡報 (Slides)**:
-學長姐報告用的 PDF。一定會有。
+報告者用的簡報 PDF。一定會有。
 _Avoid_: deck, PPT
 
 **論文 (Paper)**:
