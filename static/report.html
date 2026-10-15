@@ -20,7 +20,7 @@ const rid = new URLSearchParams(location.search).get("id");
 const app = document.getElementById("app");
 let pdf, guide, page = 1, tab = "guide", rendering = false, rerender = false;
 let qa = {};                          // 頁數 → [{q, a, at}]，存在伺服器的 qa.json
-const pending = {}, errors = {}, drafts = {};  // 每頁各自的：等待中的問題、錯誤、還沒送出的草稿
+const pending = {}, errors = {}, drafts = {}, partial = {};  // 每頁各自的：等待中的問題、錯誤、還沒送出的草稿、邊寫邊顯示的答案
 
 async function load() {
   const res = await fetch("/api/reports/" + encodeURIComponent(rid));
@@ -150,15 +150,15 @@ function qaHtml(p) {
   const items = (qa[p] || []).map(x =>
     `<div class="qa-item"><p class="qa-q">${esc(x.q)}</p><div class="qa-a">${richText(x.a)}</div></div>`).join("");
   const wait = pending[p] ? `<div class="qa-item"><p class="qa-q">${esc(pending[p])}</p>
-    <p class="qa-wait"><span class="pulse"></span>Claude 在想，通常要 20 秒到 1 分鐘</p></div>` : "";
+    ${partial[p] ? `<div class="qa-a">${richText(partial[p])}</div>` : '<p class="qa-wait"><span class="pulse"></span>Claude 在想…</p>'}</div>` : "";
   const err = errors[p] ? `<p class="error" role="alert">${esc(errors[p])}</p>` : "";
   return `<section class="qa" aria-label="這頁的問答">
-    <h3>這頁還有疑問？</h3>${items}${wait}${err}
+    ${items}${wait}${err}</section>
     <form class="qa-form">
-      <textarea rows="2" aria-label="問 Claude 這頁的問題" placeholder="例如：這張圖的 y 軸是什麼？" ${pending[p] ? "disabled" : ""}></textarea>
+      <textarea rows="2" aria-label="問 Claude 這頁的問題" placeholder="回覆 Claude…" ${pending[p] ? "disabled" : ""}></textarea>
       <div class="qa-actions"><span class="muted">⌘ Enter 送出</span>
         <button class="btn primary" type="submit" ${pending[p] ? "disabled" : ""}>問 Claude</button></div>
-    </form></section>`;
+    </form>`;
 }
 
 function setupQaForm(p) {
@@ -182,14 +182,33 @@ async function askQuestion(p, question) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ page: p, question }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "問題格式不對");
-    (qa[p] = qa[p] || []).push(data);
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(typeof data.detail === "string" ? data.detail : "問題格式不對");
+    }
+    // 伺服器一行傳一個 JSON：reset 清掉目前的字、delta 接上新的字、done 帶最後存好的答案
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "", finished = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const l of lines) {
+        const ev = JSON.parse(l);
+        if (ev.t === "error") throw new Error(ev.msg);
+        if (ev.t === "done") { (qa[p] = qa[p] || []).push(ev.entry); finished = true; }
+        else { partial[p] = ev.t === "reset" ? "" : (partial[p] || "") + ev.text; refreshQa(p); }
+      }
+    }
+    if (!finished) throw new Error("連線中斷了");
   } catch (err) {
     errors[p] = "沒有問成功：" + err.message;
     drafts[p] = question;  // 把問題放回輸入框，不用重打
   } finally {
     delete pending[p];
+    delete partial[p];
     refreshQa(p);
   }
 }

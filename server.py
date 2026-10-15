@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,7 +21,7 @@ QA_TIMEOUT = 5 * 60
 MAX_PAPERS = 5  # 問答會把每篇全文放進 prompt，太多篇會很貴
 # 不帶使用者平常的 Claude Code 設定（MCP、skills、外掛、長的系統指示）：
 # 跟讀論文無關，每次呼叫固定開銷從約 3.4 萬 token 降到約 2 千
-CLAUDE = ["claude", "-p", "--model", "sonnet", "--effort", "medium",
+CLAUDE = ["claude", "-p", "--model", "sonnet",
           "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "project",
           "--no-session-persistence"]
 SYSTEM = "你是幫資管碩士生讀懂 lab meeting 論文簡報的助教。照使用者的指示用工具讀寫檔案，用繁體中文寫。"
@@ -146,7 +147,7 @@ def generate(rid: str, rename: bool) -> None:
         prompt = fill(PROMPT, paper=paper_note(d), dir=rid)
         # prompt 裡的路徑都是相對 reports/ 寫的
         r = subprocess.run(
-            CLAUDE + ["--system-prompt", SYSTEM, prompt] + tools("Read", "Write"),
+            CLAUDE + ["--effort", "medium", "--system-prompt", SYSTEM, prompt] + tools("Read", "Write"),
             cwd=REPORTS, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
         )
         if not out.exists():
@@ -231,14 +232,34 @@ def load_qa(d: Path) -> dict:
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
 
 
-def ask_claude(system: str, prompt: str) -> str | None:
+def stream_claude(system: str, prompt: str):
+    """逐行讀 claude 的串流輸出。產生 ("reset", "")（新一段回覆開始，例如讀完檔之後）、("delta", 新的字）、
+    最後一個 ("done", 完整答案或 None)。呼叫端中途不讀了，finally 會把 claude 關掉。"""
+    cmd = CLAUDE + ["--effort", "low", "--system-prompt", system, prompt,
+                    "--output-format", "stream-json", "--include-partial-messages", "--verbose"] + tools("Read")
+    proc = subprocess.Popen(cmd, cwd=REPORTS, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+    timer = threading.Timer(QA_TIMEOUT, proc.kill)
+    timer.start()
+    answer = None
     try:
-        r = subprocess.run(CLAUDE + ["--system-prompt", system, prompt, "--output-format", "json"] + tools("Read"), cwd=REPORTS, capture_output=True, text=True, timeout=QA_TIMEOUT)
-        out = json.loads(r.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        return None
-    res = out[-1] if isinstance(out, list) else out  # 新版 CLI 會輸出整串事件，最後一個是結果
-    return None if res.get("is_error") or not res.get("result") else res["result"].strip()
+        for line in proc.stdout:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "stream_event":
+                e = ev["event"]
+                if e["type"] == "message_start":
+                    yield "reset", ""
+                elif e["type"] == "content_block_delta" and e["delta"].get("type") == "text_delta":
+                    yield "delta", e["delta"]["text"]
+            elif ev.get("type") == "result" and not ev.get("is_error") and ev.get("result"):
+                answer = ev["result"].strip()
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+    yield "done", answer
 
 
 class Question(BaseModel):
@@ -266,17 +287,25 @@ def ask(rid: str, q: Question):
     system = f"{SYSTEM}\n\n這份報告的論文（可能有好幾篇）：\n\n{paper}"
     prompt = fill(QA_PROMPT, dir=rid, page=str(q.page), slide_guide=slide,
                   history=history, terms=terms, question=q.question.strip())
-    answer = ask_claude(system, prompt)
-    if not answer:
-        raise HTTPException(502, "Claude 沒有回答，請再試一次")
-    entry = {"q": q.question.strip(), "a": answer, "at": datetime.now().isoformat(timespec="seconds")}
-    with qa_lock:
-        qa = load_qa(d)
-        qa.setdefault(str(q.page), []).append(entry)
-        tmp = d / "qa.tmp.json"
-        tmp.write_text(json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(d / "qa.json")
-    return entry
+
+    def events():
+        for kind, val in stream_claude(system, prompt):
+            if kind != "done":
+                yield json.dumps({"t": kind, "text": val}, ensure_ascii=False) + "\n"
+            elif not val:
+                yield json.dumps({"t": "error", "msg": "Claude 沒有回答，請再試一次"}, ensure_ascii=False) + "\n"
+            else:
+                entry = {"q": q.question.strip(), "a": val, "at": datetime.now().isoformat(timespec="seconds")}
+                with qa_lock:
+                    qa = load_qa(d)
+                    qa.setdefault(str(q.page), []).append(entry)
+                    tmp = d / "qa.tmp.json"
+                    tmp.write_text(json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8")
+                    tmp.replace(d / "qa.json")
+                yield json.dumps({"t": "done", "entry": entry}, ensure_ascii=False) + "\n"
+
+    # 一行一個 JSON（ndjson）：reset / delta / done / error
+    return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
 app.mount("/files", StaticFiles(directory=REPORTS), name="files")

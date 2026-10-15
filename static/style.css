@@ -111,7 +111,7 @@ svg { display: block; }
 .state.error { color: var(--warn); }
 
 /* 報告頁 */
-.viewer { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+.viewer { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100vh; }
 .topbar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 8px 16px; background: var(--sheet); border-bottom: 1px solid var(--rule);
@@ -133,7 +133,7 @@ svg { display: block; }
 }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-selected=true] { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
-.main { display: grid; grid-template-columns: minmax(0, var(--split, 62%)) 9px minmax(0, 1fr); min-height: 0; }
+.main { display: grid; grid-template-columns: minmax(0, var(--split, 62%)) 9px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; }
 .main.dragging { cursor: col-resize; user-select: none; }
 .main.dragging canvas { pointer-events: none; }
 .splitter { position: relative; cursor: col-resize; background: var(--sheet); border-left: 1px solid var(--rule); touch-action: none; }
@@ -145,8 +145,8 @@ svg { display: block; }
 .splitter:focus-visible { outline-offset: -2px; }
 .slide { display: flex; align-items: center; justify-content: center; padding: 24px; min-height: 0; overflow: auto; }
 .slide canvas { max-width: 100%; max-height: 100%; border-radius: 4px; box-shadow: var(--shadow); background: #fff; }
-.panel { background: var(--sheet); padding: 28px 32px 48px; overflow: auto; }
-.reading { max-width: 36em; font: 16.5px/1.95 var(--serif); }
+.panel { background: var(--sheet); padding: 28px 32px 0; overflow: auto; }
+.reading { max-width: 36em; min-height: 100%; display: flex; flex-direction: column; font: 16.5px/1.95 var(--serif); }
 .reading h2 { font: 700 13px/1.4 var(--sans); color: var(--pencil); margin: 0 0 16px; }
 .reading h3 { font: 700 16px/1.4 var(--sans); margin: 28px 0 6px; }
 .reading h3:first-of-type { margin-top: 0; }
@@ -155,8 +155,7 @@ svg { display: block; }
 .reading li { margin-bottom: 4px; }
 
 /* 每頁問答 */
-.qa { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--rule); }
-.reading .qa h3 { margin: 0 0 12px; }
+.qa { flex: 1; margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--rule); }
 .qa-item { margin-bottom: 20px; }
 .qa-q {
   font: 500 15px/1.6 var(--sans); margin: 0 0 8px !important;
@@ -166,7 +165,7 @@ svg { display: block; }
 .qa-wait { font: 14px/1.6 var(--sans); color: var(--pencil); display: flex; align-items: center; gap: 10px; }
 .qa-wait .pulse { margin: 0; width: 8px; height: 8px; }
 .qa .error { font-family: var(--sans); }
-.qa-form { display: grid; gap: 8px; }
+.qa-form { display: grid; gap: 8px; margin-top: auto; position: sticky; bottom: 0; padding: 12px 0 20px; background: var(--sheet); }  /* 固定在面板底部 */
 .qa-form textarea {
   width: 100%; resize: vertical; min-height: 64px; padding: 10px 12px;
   border: 1px solid var(--rule); border-radius: 8px; background: var(--desk);
@@ -214,10 +213,10 @@ svg { display: block; }
 
 @media (max-width: 800px) {
   .viewer { height: auto; }
-  .main { grid-template-columns: 1fr; }
+  .main { grid-template-columns: 1fr; grid-template-rows: none; }
   .splitter { display: none; }
   .slide { height: 60vh; padding: 16px; }
-  .panel { border-top: 1px solid var(--rule); padding: 24px 16px; }
+  .panel { border-top: 1px solid var(--rule); padding: 24px 16px 0; }
 }
 @media (max-width: 560px) {
   .home { padding-top: 32px; }
