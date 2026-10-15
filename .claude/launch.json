@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "paper-guide",
+      "runtimeExecutable": ".venv/bin/uvicorn",
+      "runtimeArgs": ["server:app", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

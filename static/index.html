@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@400;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="home">
+  <header class="masthead">
+    <h1>Paper Guide</h1>
+    <p>前一天先上傳學長姐的簡報，讀完導讀，開會時對著翻。</p>
+  </header>
+
+  <form class="sheet" id="upload">
+    <div class="drops">
+      <label class="drop">
+        <input type="file" name="slides" accept="application/pdf" required>
+        <span class="drop-title">簡報 PDF</span>
+        <span class="drop-hint">拖進來，或點這裡選檔</span>
+      </label>
+      <label class="drop">
+        <input type="file" name="paper" accept="application/pdf" multiple>
+        <span class="drop-title">論文 PDF <span class="muted">選填，可以多篇</span></span>
+        <span class="drop-hint">有原文的話，導讀會更準</span>
+      </label>
+    </div>
+    <label class="field">名字
+      <input type="text" name="name" placeholder="空白就用論文標題">
+    </label>
+    <div class="actions">
+      <button class="btn primary" type="submit">產生導讀</button>
+      <span id="msg" class="muted" role="status"></span>
+    </div>
+  </form>
+
+  <section class="history">
+    <h2>我的報告</h2>
+    <ul class="reports" id="list"><li class="empty">載入中…</li></ul>
+  </section>
+</main>
+<script>
+const LABEL = { done: "完成", generating: "產生中", error: "失敗" };
+let timer;
+
+async function load() {
+  const rows = await (await fetch("/api/reports")).json();
+  const list = document.getElementById("list");
+  list.replaceChildren(...rows.map(r => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.className = "report";
+    a.href = "report.html?id=" + encodeURIComponent(r.id);
+    const date = document.createElement("span"), title = document.createElement("span"), state = document.createElement("span");
+    date.className = "report-date";
+    date.textContent = r.id.slice(0, 10);
+    title.className = "report-title";
+    title.textContent = r.id.slice(11);
+    state.className = "state " + r.status;
+    state.textContent = LABEL[r.status];
+    a.append(date, title, state);
+    li.append(a);
+    return li;
+  }));
+  if (!rows.length) list.innerHTML = '<li class="empty">還沒有報告。上傳第一份簡報吧。</li>';
+  clearTimeout(timer);
+  if (rows.some(r => r.status === "generating")) timer = setTimeout(load, 5000);
+}
+
+document.querySelectorAll(".drop").forEach(drop => {
+  const input = drop.querySelector("input"), hint = drop.querySelector(".drop-hint"), original = hint.textContent;
+  input.addEventListener("change", () => {
+    const names = [...input.files].map(f => f.name);
+    hint.textContent = names.length ? names.join("、") : original;
+    drop.classList.toggle("has-file", names.length > 0);
+  });
+  input.addEventListener("dragenter", () => drop.classList.add("over"));
+  ["dragleave", "drop"].forEach(t => input.addEventListener(t, () => drop.classList.remove("over")));
+});
+
+document.getElementById("upload").addEventListener("submit", async e => {
+  e.preventDefault();
+  const form = e.target, btn = form.querySelector("button"), msg = document.getElementById("msg");
+  btn.disabled = true;
+  msg.textContent = "上傳中…";
+  try {
+    const res = await fetch("/api/reports", { method: "POST", body: new FormData(form) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    location.href = "report.html?id=" + encodeURIComponent(data.id);
+  } catch (err) {
+    msg.textContent = "上傳失敗：" + err.message;
+    btn.disabled = false;
+  }
+});
+
+load();
+</script>
+</body>
+</html>
