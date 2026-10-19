@@ -21,9 +21,12 @@ QA_TIMEOUT = 5 * 60
 MAX_PAPERS = 5  # 問答會把每篇全文放進 prompt，太多篇會很貴
 # 不帶使用者平常的 Claude Code 設定（MCP、skills、外掛、長的系統指示）：
 # 跟讀論文無關，每次呼叫固定開銷從約 3.4 萬 token 降到約 2 千
-CLAUDE = ["claude", "-p", "--model", "sonnet",
+CLAUDE = ["claude", "-p",
           "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "project",
           "--no-session-persistence"]
+MODELS = ("sonnet", "opus", "haiku")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_OPTS = {"model": "sonnet", "effort": "medium"}  # 產生導讀的預設，使用者可在上傳時改
 SYSTEM = "你是幫資管碩士生讀懂 lab meeting 論文簡報的助教。照使用者的指示用工具讀寫檔案，用繁體中文寫。"
 
 
@@ -145,9 +148,11 @@ def generate(rid: str, rename: bool) -> None:
     out.unlink(missing_ok=True)
     try:
         prompt = fill(PROMPT, paper=paper_note(d), dir=rid)
+        opts_file = d / "options.json"
+        opts = json.loads(opts_file.read_text(encoding="utf-8")) if opts_file.exists() else DEFAULT_OPTS
         # prompt 裡的路徑都是相對 reports/ 寫的
         r = subprocess.run(
-            CLAUDE + ["--effort", "medium", "--system-prompt", SYSTEM, prompt] + tools("Read", "Write"),
+            CLAUDE + ["--model", opts["model"], "--effort", opts["effort"], "--system-prompt", SYSTEM, prompt] + tools("Read", "Write"),
             cwd=REPORTS, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
         )
         if not out.exists():
@@ -184,7 +189,10 @@ def list_reports():
 
 
 @app.post("/api/reports")
-async def create_report(slides: UploadFile, paper: list[UploadFile] | None = None, name: str = Form("")):
+async def create_report(slides: UploadFile, paper: list[UploadFile] | None = None, name: str = Form(""),
+                        model: str = Form(DEFAULT_OPTS["model"]), effort: str = Form(DEFAULT_OPTS["effort"])):
+    if model not in MODELS or effort not in EFFORTS:
+        raise HTTPException(400, "模型或 effort 不對")
     papers = [p for p in paper or [] if p.filename]  # 沒選檔案時瀏覽器還是會送一個空的
     if len(papers) > MAX_PAPERS:
         raise HTTPException(400, f"論文最多 {MAX_PAPERS} 篇")
@@ -193,6 +201,7 @@ async def create_report(slides: UploadFile, paper: list[UploadFile] | None = Non
     d = unique_dir(f"{today} {custom or '產生中'}")
     d.mkdir()
     try:
+        (d / "options.json").write_text(json.dumps({"model": model, "effort": effort}), encoding="utf-8")
         await save_pdf(slides, d / "slides.pdf")
         for i, p in enumerate(papers, 1):
             await save_pdf(p, d / ("paper.pdf" if i == 1 else f"paper-{i}.pdf"))
@@ -235,7 +244,7 @@ def load_qa(d: Path) -> dict:
 def stream_claude(system: str, prompt: str):
     """逐行讀 claude 的串流輸出。產生 ("reset", "")（新一段回覆開始，例如讀完檔之後）、("delta", 新的字）、
     最後一個 ("done", 完整答案或 None)。呼叫端中途不讀了，finally 會把 claude 關掉。"""
-    cmd = CLAUDE + ["--effort", "low", "--system-prompt", system, prompt,
+    cmd = CLAUDE + ["--model", "sonnet", "--effort", "low", "--system-prompt", system, prompt,
                     "--output-format", "stream-json", "--include-partial-messages", "--verbose"] + tools("Read")
     proc = subprocess.Popen(cmd, cwd=REPORTS, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
     timer = threading.Timer(QA_TIMEOUT, proc.kill)

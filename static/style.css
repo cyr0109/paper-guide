@@ -86,9 +86,10 @@ svg { display: block; }
 .drop-hint { color: var(--pencil); font-size: 13px; overflow-wrap: anywhere; }
 .drop.has-file .drop-hint { color: var(--pen); }
 .field { display: grid; gap: 6px; margin-bottom: 20px; font-weight: 500; }
-.field input {
+.pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.field input, .field select {
   height: 40px; padding: 0 12px; border: 1px solid var(--rule); border-radius: 8px;
-  background: var(--desk); font-weight: 400;
+  background: var(--desk); color: var(--ink); font-weight: 400;
 }
 .field input::placeholder { color: var(--pencil); }
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

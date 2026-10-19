@@ -32,6 +32,24 @@
     <label class="field">名字
       <input type="text" name="name" placeholder="空白就用論文標題">
     </label>
+    <div class="pickers">
+      <label class="field">模型
+        <select name="model">
+          <option value="sonnet" selected>Sonnet（預設）</option>
+          <option value="opus">Opus（最強、最貴）</option>
+          <option value="haiku">Haiku（最快、最便宜）</option>
+        </select>
+      </label>
+      <label class="field">Effort
+        <select name="effort">
+          <option value="low">low</option>
+          <option value="medium" selected>medium（預設）</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
+      </label>
+    </div>
     <div class="actions">
       <button class="btn primary" type="submit">產生導讀</button>
       <span id="msg" class="muted" role="status"></span>
