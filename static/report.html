@@ -146,6 +146,9 @@ function renderPanel() {
   }
 }
 
+const qaOpts = { effort: "low" };  // 換頁重畫時保留
+const opts = (list, cur) => list.map(v => `<option${v === cur ? " selected" : ""}>${v}</option>`).join("");
+
 function qaHtml(p) {
   const items = (qa[p] || []).map(x =>
     `<div class="qa-item"><p class="qa-q">${esc(x.q)}</p><div class="qa-a">${richText(x.a)}</div></div>`).join("");
@@ -157,12 +160,14 @@ function qaHtml(p) {
     <form class="qa-form">
       <textarea rows="2" aria-label="問 Claude 這頁的問題" placeholder="回覆 Claude…" ${pending[p] ? "disabled" : ""}></textarea>
       <div class="qa-actions"><span class="muted">⌘ Enter 送出</span>
+        <select name="effort" aria-label="Effort">${opts(["low", "medium", "high", "xhigh", "max"], qaOpts.effort)}</select>
         <button class="btn primary" type="submit" ${pending[p] ? "disabled" : ""}>問 Claude</button></div>
     </form>`;
 }
 
 function setupQaForm(p) {
   const form = app.querySelector(".qa-form"), box = form.querySelector("textarea");
+  form.querySelectorAll("select").forEach(s => s.addEventListener("change", () => { qaOpts[s.name] = s.value; }));
   box.value = drafts[p] || "";
   box.addEventListener("input", () => { drafts[p] = box.value; });
   box.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) form.requestSubmit(); });
@@ -180,7 +185,7 @@ async function askQuestion(p, question) {
   try {
     const res = await fetch("/api/reports/" + encodeURIComponent(rid) + "/qa", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ page: p, question }),
+      body: JSON.stringify({ page: p, question, ...qaOpts }),
     });
     if (!res.ok) {
       const data = await res.json();
