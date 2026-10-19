@@ -241,10 +241,10 @@ def load_qa(d: Path) -> dict:
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
 
 
-def stream_claude(system: str, prompt: str):
+def stream_claude(system: str, prompt: str, effort: str):
     """逐行讀 claude 的串流輸出。產生 ("reset", "")（新一段回覆開始，例如讀完檔之後）、("delta", 新的字）、
     最後一個 ("done", 完整答案或 None)。呼叫端中途不讀了，finally 會把 claude 關掉。"""
-    cmd = CLAUDE + ["--model", "sonnet", "--effort", "low", "--system-prompt", system, prompt,
+    cmd = CLAUDE + ["--model", "sonnet", "--effort", effort, "--system-prompt", system, prompt,
                     "--output-format", "stream-json", "--include-partial-messages", "--verbose"] + tools("Read")
     proc = subprocess.Popen(cmd, cwd=REPORTS, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
     timer = threading.Timer(QA_TIMEOUT, proc.kill)
@@ -274,11 +274,14 @@ def stream_claude(system: str, prompt: str):
 class Question(BaseModel):
     page: int = Field(ge=1)
     question: str = Field(min_length=1, max_length=2000)
+    effort: str = "low"
 
 
 @app.post("/api/reports/{rid}/qa")
 def ask(rid: str, q: Question):
     d = report_dir(rid)
+    if q.effort not in EFFORTS:
+        raise HTTPException(400, "effort 不對")
     if status_of(d) != "done":
         raise HTTPException(409, "導讀還沒產生好")
     guide = json.loads((d / "guide.json").read_text(encoding="utf-8"))
@@ -298,7 +301,7 @@ def ask(rid: str, q: Question):
                   history=history, terms=terms, question=q.question.strip())
 
     def events():
-        for kind, val in stream_claude(system, prompt):
+        for kind, val in stream_claude(system, prompt, q.effort):
             if kind != "done":
                 yield json.dumps({"t": kind, "text": val}, ensure_ascii=False) + "\n"
             elif not val:

@@ -174,6 +174,8 @@ svg { display: block; }
 }
 .qa-form textarea::placeholder { color: var(--pencil); }
 .qa-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; font: 13px var(--sans); }
+.qa-actions .muted { margin-right: auto; }
+.qa-actions select { height: 32px; padding: 0 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--desk); color: var(--ink); font: inherit; }
 
 /* 螢光筆術語 */
 .term {
