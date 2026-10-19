@@ -279,9 +279,9 @@ class Question(BaseModel):
 
 @app.post("/api/reports/{rid}/qa")
 def ask(rid: str, q: Question):
-    d = report_dir(rid)
     if q.effort not in EFFORTS:
         raise HTTPException(400, "effort 不對")
+    d = report_dir(rid)
     if status_of(d) != "done":
         raise HTTPException(409, "導讀還沒產生好")
     guide = json.loads((d / "guide.json").read_text(encoding="utf-8"))

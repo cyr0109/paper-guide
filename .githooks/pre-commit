@@ -1,0 +1,2 @@
+#!/bin/sh
+node static/guide.test.js && .venv/bin/python test_server.py
