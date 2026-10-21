@@ -28,8 +28,18 @@ async function load() {
   if (!res.ok) return status(r.detail || "找不到這個報告");
   if (r.moved) return location.replace("report.html?id=" + encodeURIComponent(r.moved));
   if (r.status === "generating") {
-    status('<span class="pulse"></span><h1>正在寫導讀</h1><p>Claude 在讀簡報和論文，通常要幾分鐘。<br>可以先關掉這頁，晚點再回來。</p><div class="actions"><a class="btn ghost" href="/">回首頁</a></div>');
-    return setTimeout(load, 5000);
+    const p = r.progress;
+    const steps = p.steps.map((s, i) => {
+      const state = i < p.step ? "done" : i === p.step ? "now" : "todo";
+      const note = i === p.step && p.note ? ` <span class="step-note">${esc(p.note)}</span>` : "";
+      return `<li class="${state}"${state === "now" ? ' aria-current="step"' : ""}>${esc(s)}${note}</li>`;
+    }).join("");
+    status(`<h1>正在寫導讀</h1><p>通常要幾分鐘。可以先關掉這頁，晚點再回來。</p>
+      <div class="bar" role="progressbar" aria-label="產生進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}">
+        <div style="width:${p.pct}%"></div></div>
+      <ol class="steps">${steps}</ol>
+      <div class="actions"><a class="btn ghost" href="/">回首頁</a></div>`);
+    return setTimeout(load, 2000);
   }
   if (r.status === "error") {
     status('<h1>導讀沒有產生出來</h1><p>錯誤訊息在下面。按「重新產生」再跑一次。</p><div class="actions"><button class="btn primary" id="retry">重新產生</button><a class="btn ghost" href="/">回首頁</a></div><pre class="error"></pre>');

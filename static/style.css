@@ -207,10 +207,22 @@ svg { display: block; }
 .status p { color: var(--pencil); margin: 0 0 20px; }
 .status .actions { justify-content: center; }
 .status .error { margin: 24px 0 0; padding: 12px 16px; background: var(--sheet); border-radius: 8px; font: 12.5px/1.6 ui-monospace, Menlo, monospace; max-height: 40vh; overflow: auto; }
+.bar { height: 8px; border-radius: 99px; background: var(--rule); overflow: hidden; margin: 0 0 24px; }
+.bar > div { height: 100%; background: var(--pen); border-radius: inherit; transition: width .6s ease; }
+.steps { list-style: none; margin: 0 auto 28px; padding: 0; display: inline-grid; gap: 8px; text-align: left; }
+.steps li { display: flex; align-items: baseline; gap: 10px; color: var(--pencil); }
+.steps li::before {
+  content: ""; flex: none; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--rule); transform: translateY(1px);
+}
+.steps li.done::before { background: var(--pen); border-color: var(--pen); }
+.steps li.now { color: var(--ink); font-weight: 500; }
+.steps li.now::before { border-color: var(--pen); animation: pulse 1.4s ease-in-out infinite; }
+.step-note { color: var(--pen); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
 .pulse { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--pen); margin-bottom: 20px; animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .25; transform: scale(.7); } }
 @media (prefers-reduced-motion: reduce) {
-  .pulse { animation: none; }
+  .pulse, .steps li.now::before { animation: none; }
   * { transition: none !important; }
 }
 
