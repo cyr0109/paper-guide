@@ -234,7 +234,10 @@ def generate(rid: str, rename: bool) -> None:
                         "--output-format", "stream-json", "--include-partial-messages", "--verbose"] + tools("Read", "Write")
         state, junk, result = {}, [], ""
         for ev in claude_events(cmd, CLAUDE_TIMEOUT, junk):
-            p = progress_from(ev, state, total)
+            try:
+                p = progress_from(ev, state, total)
+            except (KeyError, TypeError, AttributeError):
+                p = None  # CLI 事件格式變了頂多進度條不動，不能讓導讀跟著失敗
             if p:
                 report(*p)
             if ev.get("type") == "result":
