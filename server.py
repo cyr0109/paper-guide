@@ -48,6 +48,7 @@ running: set[str] = set()
 moved: dict[str, str] = {}  # 舊 id → 改名後的 id
 STEPS = ["準備論文文字稿", "讀簡報", "讀論文", "寫每頁導讀", "寫綜整和術語表", "檢查格式"]
 progress: dict[str, dict] = {}  # 產生中的報告 → {"step": STEPS 的第幾個, "pct": 0-100, "note": 補充說明}
+live: dict[str, dict] = {}  # 產生中的報告 → 已經寫完的部分 {"title", "slides"}，讓使用者邊等邊看
 
 app = FastAPI()
 
@@ -174,6 +175,41 @@ def claude_events(cmd: list[str], timeout: int, junk: list[str] | None = None):
 PAGE_KEY = re.compile(r'\\"page\\"\s*:')  # Write 的內容是跳脫過的 JSON 字串，所以 key 長這樣：\"page\":
 
 
+def partial_guide(buf: str) -> dict:
+    """從還沒寫完的 Write 輸入（{"file_path": ..., "content": "<跳脫過的 guide JSON>...）挑出已經完整的標題和每頁導讀。"""
+    m = re.search(r'"content"\s*:\s*"', buf)
+    if not m:
+        return {"slides": []}
+    s, text = buf[m.end() - 1:], None
+    try:
+        text = json.JSONDecoder().raw_decode(s)[0]  # content 已經寫完
+    except ValueError:
+        for cut in range(7):  # 結尾可能卡在跳脫字元中間（\ 或 \u12），切掉再補上結尾的引號
+            try:
+                text = json.loads(s[:len(s) - cut] + '"')
+                break
+            except ValueError:
+                continue
+    if text is None:
+        return {"slides": []}
+    out = {"slides": []}
+    t = re.search(r'"title"\s*:\s*("(?:[^"\\]|\\.)*")', text)
+    if t:
+        out["title"] = json.loads(t.group(1))
+    a = re.search(r'"slides"\s*:\s*\[', text)
+    i, dec = (a.end() if a else len(text)), json.JSONDecoder()
+    while i < len(text):
+        while i < len(text) and text[i] in " \t\r\n,":
+            i += 1
+        try:
+            obj, i = dec.raw_decode(text, i)
+        except ValueError:
+            break  # 這一頁還沒寫完（或陣列結束了）
+        if isinstance(obj, dict) and isinstance(obj.get("page"), int) and isinstance(obj.get("guide"), str):
+            out["slides"].append({"page": obj["page"], "guide": obj["guide"]})
+    return out
+
+
 def progress_from(ev: dict, state: dict, total: int) -> tuple[int, int, str] | None:
     """從 claude 的一個串流事件推算進度 (STEPS 的第幾步, 百分比, 補充)。跟進度無關的事件回 None。"""
     if ev.get("type") == "assistant":  # 完整的一則回覆：看它呼叫了哪個工具
@@ -203,9 +239,13 @@ def progress_from(ev: dict, state: dict, total: int) -> tuple[int, int, str] | N
         return 3, 35, f"0 / {total} 頁" if total else ""
     if state.get("writing") and e["type"] == "content_block_delta" and e["delta"].get("type") == "input_json_delta":
         state["buf"] += e["delta"]["partial_json"]
-        if '\\"synthesis\\"' in state["buf"]:
-            return 4, 92, ""
+        syn = '\\"synthesis\\"' in state["buf"]
         n = len(PAGE_KEY.findall(state["buf"]))
+        if (n, syn) != state.get("seen"):  # 新的一頁開始寫 = 上一頁寫完了，這時才重新解析，不用每個字都解析
+            state["seen"] = (n, syn)
+            state["guide"] = partial_guide(state["buf"])
+        if syn:
+            return 4, 92, ""
         if total:
             return 3, 35 + 55 * min(n, total) // total, f"{min(n, total)} / {total} 頁"
         return 3, 60, f"{n} 頁"
@@ -240,6 +280,8 @@ def generate(rid: str, rename: bool) -> None:
                 p = None  # CLI 事件格式變了頂多進度條不動，不能讓導讀跟著失敗
             if p:
                 report(*p)
+            if "guide" in state:
+                live[rid] = state["guide"]
             if ev.get("type") == "result":
                 result = str(ev.get("result", ""))
         if not out.exists():
@@ -256,6 +298,7 @@ def generate(rid: str, rename: bool) -> None:
     finally:
         running.discard(rid)
         progress.pop(rid, None)
+        live.pop(rid, None)
 
 
 def start(rid: str, rename: bool) -> None:
@@ -311,6 +354,7 @@ def get_report(rid: str):
         res["qa"] = load_qa(d)
     elif res["status"] == "generating":
         res["progress"] = {**progress.get(rid, {"step": 0, "pct": 0, "note": ""}), "steps": STEPS}
+        res["partial"] = live.get(rid, {"slides": []})
     elif res["status"] == "error":
         e = d / "error.txt"
         res["error"] = e.read_text(encoding="utf-8") if e.exists() else "產生被中斷了（可能 server 重開過）"

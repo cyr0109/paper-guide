@@ -20,28 +20,29 @@ const rid = new URLSearchParams(location.search).get("id");
 const app = document.getElementById("app");
 let pdf, guide, page = 1, tab = "guide", rendering = false, rerender = false;
 let qa = {};                          // 頁數 → [{q, a, at}]，存在伺服器的 qa.json
+let live = null;                      // 產生中時的進度 {step, pct, note, steps}；產生完是 null
 const pending = {}, errors = {}, drafts = {}, partial = {};  // 每頁各自的：等待中的問題、錯誤、還沒送出的草稿、邊寫邊顯示的答案
 
 async function load() {
   const res = await fetch("/api/reports/" + encodeURIComponent(rid));
   const r = await res.json();
   if (!res.ok) return status(r.detail || "找不到這個報告");
-  if (r.moved) return location.replace("report.html?id=" + encodeURIComponent(r.moved));
+  if (r.moved) return location.replace("report.html?id=" + encodeURIComponent(r.moved) + location.hash);  // 留在同一頁
   if (r.status === "generating") {
-    const p = r.progress;
-    const steps = p.steps.map((s, i) => {
-      const state = i < p.step ? "done" : i === p.step ? "now" : "todo";
-      const note = i === p.step && p.note ? ` <span class="step-note">${esc(p.note)}</span>` : "";
-      return `<li class="${state}"${state === "now" ? ' aria-current="step"' : ""}>${esc(s)}${note}</li>`;
-    }).join("");
-    status(`<h1>正在寫導讀</h1><p>通常要幾分鐘。可以先關掉這頁，晚點再回來。</p>
-      <div class="bar" role="progressbar" aria-label="產生進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}">
-        <div style="width:${p.pct}%"></div></div>
-      <ol class="steps">${steps}</ol>
-      <div class="actions"><a class="btn ghost" href="/">回首頁</a></div>`);
+    // 簡報一上傳就在了：先打開來看，已經寫好的頁先顯示，其他頁顯示進度
+    const first = !pdf;
+    live = r.progress;
+    guide = { title: r.partial.title || "導讀產生中", slides: r.partial.slides, glossary: null };
+    if (first) {
+      pdf = await pdfjsLib.getDocument("/files/" + encodeURIComponent(rid) + "/slides.pdf").promise;
+      buildViewer(r.papers || []);
+    } else {
+      refreshLive();
+    }
     return setTimeout(load, 2000);
   }
   if (r.status === "error") {
+    pdf = live = null;  // 看到一半失敗：畫面會被換掉，重試時要重新開一次
     status('<h1>導讀沒有產生出來</h1><p>錯誤訊息在下面。按「重新產生」再跑一次。</p><div class="actions"><button class="btn primary" id="retry">重新產生</button><a class="btn ghost" href="/">回首頁</a></div><pre class="error"></pre>');
     app.querySelector(".error").textContent = r.error;
     document.getElementById("retry").onclick = async () => {
@@ -53,8 +54,45 @@ async function load() {
   guide = r.guide;
   qa = r.qa || {};
   document.title = guide.title;
+  if (live) {  // 剛剛還在產生、頁面已經開著：換成完整的導讀，打開綜整、術語表和問答
+    live = null;
+    return refreshLive();
+  }
   pdf = await pdfjsLib.getDocument("/files/" + encodeURIComponent(rid) + "/slides.pdf").promise;
   buildViewer(r.papers || []);
+}
+
+// 產生中每次輪詢後更新標題、分頁按鈕。這頁的導讀有變才整塊重畫；只有進度變的話只換進度那一小塊，
+// 不然 hover 的術語解釋、選到一半的文字會一直被打斷
+let liveKey = "";
+function refreshLive() {
+  app.querySelector(".title").textContent = guide.title;
+  document.title = guide.title;
+  app.querySelectorAll('[data-tab="synthesis"], [data-tab="glossary"]').forEach(b => {
+    b.disabled = !!live;
+    b.title = live ? "全部寫完才有" : "";
+  });
+  if (live) tab = "guide";
+  const s = guide.slides.find(s => s.page === page);
+  const slot = document.getElementById("live-slot");
+  if (JSON.stringify([page, s && s.guide, !!live]) !== liveKey || !slot) renderPanel();
+  else slot.innerHTML = liveHtml(!s);
+}
+
+function liveHtml(full) {
+  const p = live;
+  const bar = `<div class="bar" role="progressbar" aria-label="產生進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}">
+    <div style="width:${p.pct}%"></div></div>`;
+  if (!full) {
+    return `<div class="live">${bar}<p class="muted">還在寫其他部分：${esc(p.steps[p.step])}${p.note ? `（${esc(p.note)}）` : ""}。
+      綜整、術語表和問答會在全部寫完後打開。</p></div>`;
+  }
+  const steps = p.steps.map((s, i) => {
+    const state = i < p.step ? "done" : i === p.step ? "now" : "todo";
+    const note = i === p.step && p.note ? ` <span class="step-note">${esc(p.note)}</span>` : "";
+    return `<li class="${state}"${state === "now" ? ' aria-current="step"' : ""}>${esc(s)}${note}</li>`;
+  }).join("");
+  return `<div class="live"><p>這頁的導讀還在寫，寫好會自動出現。</p>${bar}<ol class="steps">${steps}</ol></div>`;
 }
 
 function status(html) {
@@ -99,9 +137,10 @@ function buildViewer(papers) {
     if (e.key === "ArrowLeft" || e.key === "PageUp") go(page - 1);
   });
   window.addEventListener("resize", renderSlide);
-  setupTooltips(document.getElementById("panel"), guide.glossary || []);
+  setupTooltips(document.getElementById("panel"), () => guide.glossary);
   setupSplitter();
   go(parseInt(location.hash.slice(1), 10) || 1);
+  if (live) refreshLive();
 }
 
 function go(n) {
@@ -143,6 +182,11 @@ function renderPanel() {
   app.querySelectorAll("[data-tab]").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === tab));
   if (tab === "guide") {
     const s = guide.slides.find(s => s.page === page);
+    liveKey = JSON.stringify([page, s && s.guide, !!live]);
+    if (live) {
+      panel.innerHTML = `<h2>第 ${page} 頁</h2>` + (s ? richText(s.guide) : "") + `<div id="live-slot">${liveHtml(!s)}</div>`;
+      return;
+    }
     panel.innerHTML = `<h2>第 ${page} 頁</h2>` + (s ? richText(s.guide) : '<p class="muted">這頁沒有導讀。</p>') + qaHtml(page);
     setupQaForm(page);
   } else if (tab === "synthesis") {
