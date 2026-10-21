@@ -46,6 +46,8 @@ qa_lock = threading.Lock()
 # shortcut: 執行中的工作只記在記憶體，server 重開後會顯示「中斷」，按重試即可。
 running: set[str] = set()
 moved: dict[str, str] = {}  # 舊 id → 改名後的 id
+STEPS = ["準備論文文字稿", "讀簡報", "讀論文", "寫每頁導讀", "寫綜整和術語表", "檢查格式"]
+progress: dict[str, dict] = {}  # 產生中的報告 → {"step": STEPS 的第幾個, "pct": 0-100, "note": 補充說明}
 
 app = FastAPI()
 
@@ -141,22 +143,104 @@ def paper_note(d: Path) -> str:
     return "\n".join(lines) + "\n\n" + TXT_HINT
 
 
+def pdf_pages(pdf: Path) -> int:
+    try:
+        out = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    m = re.search(r"^Pages:\s+(\d+)", out, re.M)
+    return int(m.group(1)) if m else 0  # 0 = 不知道總頁數
+
+
+def claude_events(cmd: list[str], timeout: int, junk: list[str] | None = None):
+    """跑 claude（要帶 --output-format stream-json），一行一個事件 yield 出來。不是 JSON 的行收進 junk（錯誤訊息用）。
+    呼叫端中途不讀了，finally 會把 claude 關掉。"""
+    proc = subprocess.Popen(cmd, cwd=REPORTS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+    timer = threading.Timer(timeout, proc.kill)
+    timer.start()
+    try:
+        for line in proc.stdout:
+            try:
+                yield json.loads(line)
+            except ValueError:
+                if junk is not None:
+                    junk[:] = (junk + [line])[-20:]
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+
+
+PAGE_KEY = re.compile(r'\\"page\\"\s*:')  # Write 的內容是跳脫過的 JSON 字串，所以 key 長這樣：\"page\":
+
+
+def progress_from(ev: dict, state: dict, total: int) -> tuple[int, int, str] | None:
+    """從 claude 的一個串流事件推算進度 (STEPS 的第幾步, 百分比, 補充)。跟進度無關的事件回 None。"""
+    if ev.get("type") == "assistant":  # 完整的一則回覆：看它呼叫了哪個工具
+        for c in ev["message"].get("content", []):
+            if c.get("type") != "tool_use":
+                continue
+            path = str(c["input"].get("file_path", ""))
+            name = path.rsplit("/", 1)[-1]
+            if c["name"] == "Write":
+                state["writing"] = False
+                return 5, 95, ""
+            if name == "slides.pdf":
+                pages = re.search(r"(\d+)\s*$", str(c["input"].get("pages", "")))
+                state["read"] = max(state.get("read", 0), int(pages.group(1)) if pages else total)
+                if total:
+                    return 1, 5 + 20 * min(state["read"], total) // total, f"{min(state['read'], total)} / {total} 頁"
+                return 1, 15, ""
+            if name.startswith("paper"):
+                return 2, 30, ""
+            if name == "guide.tmp.json":
+                return 5, 97, ""
+    if ev.get("type") != "stream_event":
+        return None
+    e = ev["event"]
+    if e["type"] == "content_block_start" and e["content_block"].get("name") == "Write":
+        state["writing"], state["buf"] = True, ""
+        return 3, 35, f"0 / {total} 頁" if total else ""
+    if state.get("writing") and e["type"] == "content_block_delta" and e["delta"].get("type") == "input_json_delta":
+        state["buf"] += e["delta"]["partial_json"]
+        if '\\"synthesis\\"' in state["buf"]:
+            return 4, 92, ""
+        n = len(PAGE_KEY.findall(state["buf"]))
+        if total:
+            return 3, 35 + 55 * min(n, total) // total, f"{min(n, total)} / {total} 頁"
+        return 3, 60, f"{n} 頁"
+    return None
+
+
 def generate(rid: str, rename: bool) -> None:
     d = REPORTS / rid
     out = d / "guide.tmp.json"
     (d / "error.txt").unlink(missing_ok=True)
     out.unlink(missing_ok=True)
+
+    def report(step: int, pct: int, note: str = "") -> None:
+        pct = max(pct, progress.get(rid, {}).get("pct", 0))  # 進度條只往前走
+        progress[rid] = {"step": step, "pct": pct, "note": note}
+
     try:
+        report(0, 1)
         prompt = fill(PROMPT, paper=paper_note(d), dir=rid)
+        total = pdf_pages(d / "slides.pdf")
+        report(1, 5, f"0 / {total} 頁" if total else "")
         opts_file = d / "options.json"
         opts = json.loads(opts_file.read_text(encoding="utf-8")) if opts_file.exists() else DEFAULT_OPTS
         # prompt 裡的路徑都是相對 reports/ 寫的
-        r = subprocess.run(
-            CLAUDE + ["--model", opts["model"], "--effort", opts["effort"], "--system-prompt", SYSTEM, prompt] + tools("Read", "Write"),
-            cwd=REPORTS, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
-        )
+        cmd = CLAUDE + ["--model", opts["model"], "--effort", opts["effort"], "--system-prompt", SYSTEM, prompt,
+                        "--output-format", "stream-json", "--include-partial-messages", "--verbose"] + tools("Read", "Write")
+        state, junk, result = {}, [], ""
+        for ev in claude_events(cmd, CLAUDE_TIMEOUT, junk):
+            p = progress_from(ev, state, total)
+            if p:
+                report(*p)
+            if ev.get("type") == "result":
+                result = str(ev.get("result", ""))
         if not out.exists():
-            raise RuntimeError(f"claude 沒有寫出 guide.tmp.json\n\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}")
+            raise RuntimeError(f"claude 沒有寫出 guide.tmp.json\n\n{result[-2000:]}\n{''.join(junk)[-2000:]}")
         g = json.loads(out.read_text(encoding="utf-8"))
         validate_guide(g)
         out.rename(d / "guide.json")
@@ -168,6 +252,7 @@ def generate(rid: str, rename: bool) -> None:
         (d / "error.txt").write_text(f"{type(e).__name__}: {e}", encoding="utf-8")
     finally:
         running.discard(rid)
+        progress.pop(rid, None)
 
 
 def start(rid: str, rename: bool) -> None:
@@ -221,6 +306,8 @@ def get_report(rid: str):
     if res["status"] == "done":
         res["guide"] = json.loads((d / "guide.json").read_text(encoding="utf-8"))
         res["qa"] = load_qa(d)
+    elif res["status"] == "generating":
+        res["progress"] = {**progress.get(rid, {"step": 0, "pct": 0, "note": ""}), "steps": STEPS}
     elif res["status"] == "error":
         e = d / "error.txt"
         res["error"] = e.read_text(encoding="utf-8") if e.exists() else "產生被中斷了（可能 server 重開過）"
@@ -243,31 +330,19 @@ def load_qa(d: Path) -> dict:
 
 def stream_claude(system: str, prompt: str, effort: str):
     """逐行讀 claude 的串流輸出。產生 ("reset", "")（新一段回覆開始，例如讀完檔之後）、("delta", 新的字）、
-    最後一個 ("done", 完整答案或 None)。呼叫端中途不讀了，finally 會把 claude 關掉。"""
+    最後一個 ("done", 完整答案或 None)。呼叫端中途不讀了，claude_events 會把 claude 關掉。"""
     cmd = CLAUDE + ["--model", "sonnet", "--effort", effort, "--system-prompt", system, prompt,
                     "--output-format", "stream-json", "--include-partial-messages", "--verbose"] + tools("Read")
-    proc = subprocess.Popen(cmd, cwd=REPORTS, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
-    timer = threading.Timer(QA_TIMEOUT, proc.kill)
-    timer.start()
     answer = None
-    try:
-        for line in proc.stdout:
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            if ev.get("type") == "stream_event":
-                e = ev["event"]
-                if e["type"] == "message_start":
-                    yield "reset", ""
-                elif e["type"] == "content_block_delta" and e["delta"].get("type") == "text_delta":
-                    yield "delta", e["delta"]["text"]
-            elif ev.get("type") == "result" and not ev.get("is_error") and ev.get("result"):
-                answer = ev["result"].strip()
-    finally:
-        timer.cancel()
-        proc.kill()
-        proc.wait()
+    for ev in claude_events(cmd, QA_TIMEOUT):
+        if ev.get("type") == "stream_event":
+            e = ev["event"]
+            if e["type"] == "message_start":
+                yield "reset", ""
+            elif e["type"] == "content_block_delta" and e["delta"].get("type") == "text_delta":
+                yield "delta", e["delta"]["text"]
+        elif ev.get("type") == "result" and not ev.get("is_error") and ev.get("result"):
+            answer = ev["result"].strip()
     yield "done", answer
 
 
