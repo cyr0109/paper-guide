@@ -24,14 +24,15 @@ function richText(text) {
   }).join("");
 }
 
+// glossary() 回傳目前的術語表；回 null 代表術語表還在產生
 function setupTooltips(root, glossary) {
   const tip = document.getElementById("tip");
-  const byTerm = new Map(glossary.map(t => [t.term.toLowerCase(), t]));
   const show = e => {
     const el = e.target.closest(".term");
     if (!el || el.closest("dt")) return;
-    const t = byTerm.get(el.textContent.toLowerCase());
-    tip.innerHTML = t ? `<strong>${esc(t.zh)}</strong>${esc(t.gloss)}` : "術語表裡沒有這個詞";
+    const list = glossary();
+    const t = list && list.find(t => t.term.toLowerCase() === el.textContent.toLowerCase());
+    tip.innerHTML = t ? `<strong>${esc(t.zh)}</strong>${esc(t.gloss)}` : list ? "術語表裡沒有這個詞" : "術語表還在產生，寫完就看得到";
     tip.hidden = false;
     const r = el.getBoundingClientRect();
     const left = Math.min(Math.max(8, r.left), innerWidth - tip.offsetWidth - 8);
